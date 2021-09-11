@@ -1,98 +1,96 @@
 ﻿using DSharpPlus.CommandsNext;
 using DSharpPlus.CommandsNext.Attributes;
 using DSharpPlus.Entities;
+using DSharpPlus.Lavalink;
 using DSharpPlus.VoiceNext;
-using System.Threading.Tasks;
-using Serilog;
-using System.Collections.Concurrent;
-using System.IO;
-using DSharpPlus.VoiceNext.EventArgs;
 using System;
-using Microsoft.Toolkit.HighPerformance.Extensions;
-using Microsoft.Toolkit.HighPerformance;
-using System.Threading;
+using System.Linq;
+using System.Threading.Tasks;
 
 namespace YAMBot.Commands
 {    
     class VoiceChannelCommands : BaseCommandModule
     {
-        private ConcurrentDictionary<uint, ulong> _ssrcToUidMap;
-        private ConcurrentDictionary<uint, MemoryStream> _ssrcToBuffer;
-        private ConcurrentDictionary<uint, System.Timers.Timer> _ssrcToTimer;
-        private TimeSpan _timeout = TimeSpan.FromMilliseconds(100);
-
         [Command("join")]
         public async Task JoinCommand(CommandContext commandContext, DiscordChannel channel = null)
         {
             channel ??= commandContext.Member.VoiceState?.Channel;
-            var voiceNextConnection = await channel.ConnectAsync();
-            _ssrcToUidMap = new ConcurrentDictionary<uint, ulong>();
-            _ssrcToBuffer = new ConcurrentDictionary<uint, MemoryStream>();
-            _ssrcToTimer = new ConcurrentDictionary<uint, System.Timers.Timer>();
 
-            voiceNextConnection.VoiceReceived += OnVoiceReceived;
-            voiceNextConnection.UserSpeaking += OnUserSpeaking;
-            voiceNextConnection.UserJoined += OnUserJoined;
-        }
+            LavalinkExtension lava = commandContext.Client.GetLavalink();
 
-        private Task OnUserJoined(VoiceNextConnection sender, VoiceUserJoinEventArgs e)
-        {
-            _ssrcToUidMap.TryAdd(e.SSRC, e.User.Id);
-            return Task.CompletedTask;
-        }
-
-        private Task OnUserSpeaking(VoiceNextConnection sender, DSharpPlus.EventArgs.UserSpeakingEventArgs e)
-        {
-            _ssrcToUidMap.TryAdd(e.SSRC, e.User.Id);
-            return Task.CompletedTask;
-        }
-
-        private async Task OnVoiceReceived(VoiceNextConnection sender, DSharpPlus.VoiceNext.EventArgs.VoiceReceiveEventArgs e)
-        {
-            if (!_ssrcToBuffer.ContainsKey(e.SSRC))
-                _ssrcToBuffer[e.SSRC] = new MemoryStream();
-
-            var ms = _ssrcToBuffer[e.SSRC];
-            await e.PcmData.AsStream().CopyToAsync(ms);
-
-            if (!_ssrcToTimer.ContainsKey(e.SSRC))
+            if(!lava.ConnectedNodes.Any())
             {
-                var timer = new System.Timers.Timer();
-                timer.Interval = _timeout.TotalMilliseconds;
-                timer.Elapsed += (sender, eventArgs) => FinishedSpeaking(sender, eventArgs, e.SSRC);
-                timer.Enabled = true;
-                timer.AutoReset = false;
-                _ssrcToTimer[e.SSRC] = timer;
+                await commandContext.RespondAsync("Lavalink not connected");
+                return;
             }
-            else
-            {
-                _ssrcToTimer[e.SSRC].Stop();
-                _ssrcToTimer[e.SSRC].Start();
-            }
-        }
+            var node = lava.ConnectedNodes.Values.First();
 
-        private void FinishedSpeaking(object s, System.Timers.ElapsedEventArgs e, uint ssrc)
-        {
-            Log.Debug($"{ssrc} finished speaking");
+            if(channel.Type != DSharpPlus.ChannelType.Voice)
+            {
+                await commandContext.RespondAsync($"Not a valid voice channel: {channel.Name}");
+                return;
+            }
 
-            MemoryStream buffer;
-            if (_ssrcToBuffer.TryRemove(ssrc, out buffer))
-            {
-                byte[] speechData = buffer.ToArray();
-            }
-            else
-            {
-                Log.Warning($"Failed to process buffer for SSRC: {ssrc}");
-            }
+            await node.ConnectAsync(channel);            
         }
 
         [Command("leave")]
-        public Task LeaveCommand(CommandContext commandContext)
+        public async Task LeaveCommand(CommandContext commandContext, DiscordChannel channel = null)
         {
-            VoiceNextConnection connection = commandContext.Client.GetVoiceNext().GetConnection(commandContext.Guild);
-            connection.Disconnect();
-            
-            return Task.CompletedTask;
+            channel ??= commandContext.Member.VoiceState?.Channel;
+            LavalinkExtension lava = commandContext.Client.GetLavalink();
+
+            if (!lava.ConnectedNodes.Any())
+            {
+                await commandContext.RespondAsync("Lavalink not connected");
+                return;
+            }
+            var node = lava.ConnectedNodes.Values.First();
+
+            if (channel.Type != DSharpPlus.ChannelType.Voice)
+            {
+                await commandContext.RespondAsync($"Not a valid voice channel: {channel.Name}");
+                return;
+            }
+
+            LavalinkGuildConnection conn = node.GetGuildConnection(channel.Guild);
+
+            await conn?.DisconnectAsync();
+        }
+
+        [Command("play")]
+        public async Task PlayCommand(CommandContext commandContext, [RemainingText] string search)
+        {
+            if(commandContext.Member.VoiceState == null || commandContext.Member.VoiceState.Channel == null)
+            {
+                await commandContext.RespondAsync("You are not in a voice channel.");
+                return;
+            }
+
+            var lava = commandContext.Client.GetLavalink();
+            var node = lava.ConnectedNodes.Values.First();
+            var conn = node.GetGuildConnection(commandContext.Member.VoiceState.Guild);
+
+            if(conn == null)
+            {
+                await commandContext.RespondAsync("Lavalink not connected");
+                return;
+            }
+
+            var loadResult = await node.Rest.GetTracksAsync(search);
+
+            switch(loadResult.LoadResultType)
+            {
+                case LavalinkLoadResultType.LoadFailed:
+                case LavalinkLoadResultType.NoMatches:
+                    await commandContext.RespondAsync($"Track search failed for {search}");
+                    return;
+                default:
+                    break;
+            }
+
+            var track = loadResult.Tracks.First();
+            await conn.PlayAsync(track);
         }
     }
 }
