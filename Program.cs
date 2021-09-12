@@ -8,6 +8,7 @@ using Microsoft.Extensions.Logging;
 using Serilog;
 using DSharpPlus.Net;
 using DSharpPlus.Lavalink;
+using YAMBot.Services;
 
 namespace YAMBot
 {
@@ -23,7 +24,12 @@ namespace YAMBot
             Log.Logger = new LoggerConfiguration()
                 .MinimumLevel.Debug()
                 .WriteTo.Console()                
-                .CreateLogger();            
+                .CreateLogger();
+
+            var services = new ServiceCollection()
+                .AddSingleton<IConfiguration>(configuration)
+                .AddSingleton<MusicService>()
+                .BuildServiceProvider();
 
             ILoggerFactory loggerFactory = new LoggerFactory().AddSerilog();
 
@@ -42,10 +48,12 @@ namespace YAMBot
 
             CommandsNextExtension commands = discord.UseCommandsNext(new CommandsNextConfiguration()
             {
-                StringPrefixes = new[] { "!" }
+                StringPrefixes = new[] { "!" },
+                Services = services
             });
 
-            commands.RegisterCommands<VoiceChannelCommands>();
+            commands.RegisterCommands<MusicCommands>();
+            commands.RegisterCommands<ChatCommands>();
 
             var lavalinkEndpoint = new ConnectionEndpoint()
             {
